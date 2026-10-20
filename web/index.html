@@ -195,6 +195,15 @@
   .review-video { margin-top: 8px; }
   .review-video video { max-width: 100%; border-radius: 8px; display: block; }
   .review-film-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .mode-row { display: flex; flex-wrap: wrap; gap: 16px; margin: 10px 0 0; }
+  .mode-group { display: flex; flex-direction: column; gap: 4px; }
+  .mode-group label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; margin: 0; }
+  .mode-group select {
+    padding: 6px 10px; min-width: 190px;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: 13px;
+  }
+  .mode-group select:focus { outline: none; border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -237,8 +246,21 @@
 
   <div id="pipelineCard" class="card hidden">
     <h2 style="margin:0 0 4px; font-size:16px">Pipeline — <span id="pipelineSlug" style="font-weight:400"></span></h2>
+
+    <div class="mode-row">
+      <div class="mode-group">
+        <label for="modeSelect">Pipeline</label>
+        <select id="modeSelect"></select>
+      </div>
+      <div class="mode-group" id="subtitleGroup">
+        <label for="subtitleSelect">Subtitles</label>
+        <select id="subtitleSelect"></select>
+      </div>
+    </div>
+    <p class="hint" id="modeHint"></p>
+
     <p class="hint">Run the stages in order with your project slug filled in automatically.
-       Shots and voiceover are safe to re-run (already-generated files are skipped).</p>
+       Shots are safe to re-run (already-generated files are skipped).</p>
     <div id="pipelineSteps"></div>
     <div class="load-slug">
       <label for="loadSlugInput">Load existing project</label>

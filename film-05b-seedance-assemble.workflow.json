@@ -1,0 +1,235 @@
+{
+  "name": "AI Film 05B — Seedance Assembly",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "film-assemble-seedance",
+        "responseMode": "lastNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "Hook_AssembleSeedance",
+      "name": "Seedance Assemble Hook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1400,
+        300
+      ],
+      "webhookId": "C4A17F82-9D3B-4E61-B508-63E9D2A47F1C"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst body = $json.body ?? $json;\nconst slug = (body.project_slug ?? '').toString().trim().toLowerCase().replace(/[^a-z0-9-]/g, '');\nif (!slug) throw new Error('project_slug is required in the JSON body.');\nconst burnRaw = (body.burn_subs ?? 'yes').toString().trim().toLowerCase();\nconst fontRaw = Number(body.subtitle_font_size ?? 24);\nconst volRaw = Number(body.music_volume ?? 0.15);\nreturn [{ json: {\n  slug,\n  burn_subs: ['yes', 'true', '1', 'on'].includes(burnRaw),\n  font_size: Math.min(64, Math.max(10, Number.isFinite(fontRaw) && fontRaw > 0 ? fontRaw : 24)),\n  music_file: (body.music_file ?? '').toString(),\n  music_volume: Number.isFinite(volRaw) && volRaw > 0 ? volRaw : 0.15,\n}}];\n"
+      },
+      "id": "Code_BuildRequest",
+      "name": "Build Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "python",
+        "pythonCode": "\nimport json, os, subprocess\n\nitem = _items[0][\"json\"]\nslug = item[\"slug\"]\nroot = \"/home/node/files/films/\" + slug\nscript_path = os.path.join(root, \"script.json\")\nif not os.path.exists(script_path):\n    raise RuntimeError(\"project not found: \" + root + \" — run the Script stage first\")\nwith open(script_path) as fh:\n    script = json.load(fh)\n\nfps = int(script.get(\"fps\", 25))\nchars = {c[\"id\"]: c for c in script.get(\"characters\", [])}\n\n# Durations recorded by the Animate (Seedance) stage from the real clips.\nproj_path = os.path.join(root, \"project.json\")\nproj = {}\nif os.path.exists(proj_path):\n    try:\n        with open(proj_path) as fh:\n            proj = json.load(fh) or {}\n    except (ValueError, OSError):\n        proj = {}\nvideos_stage = ((proj.get(\"stages\") or {}).get(\"videos\") or {})\nrecorded = videos_stage.get(\"durations\") if isinstance(videos_stage.get(\"durations\"), dict) else {}\nfailed_ids = videos_stage.get(\"failed_ids\") if isinstance(videos_stage.get(\"failed_ids\"), list) else []\n\n\ndef probe_duration(path):\n    pr = subprocess.run([\"ffprobe\", \"-v\", \"error\", \"-show_entries\", \"format=duration\", \"-of\", \"csv=p=0\", path],\n                        capture_output=True, text=True)\n    if pr.returncode != 0:\n        return None\n    try:\n        return float(pr.stdout.strip())\n    except (TypeError, ValueError):\n        return None\n\n\nplan_shots = []\nmissing = []\nfor scene in script.get(\"scenes\", []):\n    for shot in scene.get(\"shots\", []):\n        sid = shot[\"id\"]\n        clip = os.path.join(root, \"videos\", sid + \".mp4\")\n        # No still fallback on this path: an unanimated shot is a gap to fill,\n        # not something to render as a Ken Burns still.\n        if not os.path.exists(clip):\n            missing.append(sid)\n            continue\n\n        # The clip owns the timeline — never the voiceover mp3.\n        dur = recorded.get(sid)\n        if not isinstance(dur, (int, float)) or dur <= 0:\n            dur = probe_duration(clip)\n        if not dur or dur <= 0:\n            raise RuntimeError(\"could not determine duration of \" + clip)\n\n        if shot.get(\"narration\"):\n            sub = shot[\"narration\"].strip()\n        else:\n            sub = \"\\n\".join(\n                (chars.get(d.get(\"character\", \"\"), {}).get(\"name\") or d.get(\"character\") or \"?\") + \": \" + d.get(\"text\", \"\")\n                for d in shot.get(\"dialogue\") or []\n            )\n        plan_shots.append({\"id\": sid, \"dur\": round(float(dur), 3), \"subtext\": sub, \"clip\": clip})\n\nif missing:\n    annotated = [sid + (\" (generation failed)\" if sid in failed_ids else \"\") for sid in missing]\n    raise RuntimeError(\n        \"missing Seedance clip(s): \" + \", \".join(annotated)\n        + \" — run the Animate (Seedance) stage first (videos/<shot>.mp4), then re-run this assembly\"\n    )\n\nreturn [{\"json\": {\"ok\": True, \"slug\": slug, \"fps\": fps, \"burn_subs\": bool(item.get(\"burn_subs\")),\n                  \"font_size\": item.get(\"font_size\", 24), \"music_file\": item.get(\"music_file\") or \"\",\n                  \"music_volume\": item.get(\"music_volume\", 0.15), \"shots\": plan_shots}}]\n"
+      },
+      "id": "Py_Plan",
+      "name": "Plan Seedance Render",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "python",
+        "pythonCode": "\nimport json, os, subprocess\n\nplan = _items[0][\"json\"]\nroot = \"/home/node/files/films/\" + plan[\"slug\"]\nfps = int(plan[\"fps\"])\nrdir = os.path.join(root, \"render\", \"seedance\")\nos.makedirs(rdir, exist_ok=True)\n\nfor shot in plan[\"shots\"]:\n    sid = shot[\"id\"]\n    out = os.path.join(rdir, sid + \".mp4\")\n    # 720p 16:9 clip -> 1080p, no letterboxing; yuv420p + fixed fps so every\n    # segment is stream-compatible for the concat demuxer.\n    vf = (\"[0:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,\"\n          \"fps=\" + str(fps) + \",format=yuv420p[v]\")\n    # A clip generated before native audio was enabled has no audio stream.\n    # Inject silence so every segment carries exactly one audio stream.\n    pr = subprocess.run([\"ffprobe\", \"-v\", \"error\", \"-select_streams\", \"a\",\n                         \"-show_entries\", \"stream=index\", \"-of\", \"csv=p=0\", shot[\"clip\"]],\n                        capture_output=True, text=True)\n    has_audio = bool(pr.stdout.strip())\n    args = [\"ffmpeg\", \"-y\", \"-loglevel\", \"error\", \"-i\", shot[\"clip\"]]\n    if has_audio:\n        fc = vf\n        maps = [\"-map\", \"[v]\", \"-map\", \"0:a:0\"]\n        tail = []\n    else:\n        # anullsrc is an infinite source — -shortest clips it to the video length.\n        args += [\"-f\", \"lavfi\", \"-i\", \"anullsrc=r=48000:cl=stereo\"]\n        fc = vf\n        maps = [\"-map\", \"[v]\", \"-map\", \"1:a:0\"]\n        tail = [\"-shortest\"]\n    args += [\"-filter_complex\", fc] + maps + [\n        \"-c:v\", \"libx264\", \"-preset\", \"veryfast\", \"-crf\", \"18\", \"-pix_fmt\", \"yuv420p\",\n        \"-c:a\", \"aac\", \"-b:a\", \"192k\", \"-ar\", \"48000\", \"-ac\", \"2\",\n    ] + tail + [out]\n    pr = subprocess.run(args, capture_output=True, text=True)\n    if pr.returncode != 0:\n        raise RuntimeError(\"ffmpeg normalise failed for \" + sid + \": \" + (pr.stderr or \"\")[-300:])\n\nplan[\"ok\"] = True\nplan[\"clips\"] = len(plan[\"shots\"])\nplan[\"rendered_dir\"] = rdir\nreturn [{\"json\": plan}]\n"
+      },
+      "id": "Py_Normalise",
+      "name": "Normalise Clips",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -620,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "python",
+        "pythonCode": "\nimport json, os\n\nplan = _items[0][\"json\"]\nrdir = plan[\"rendered_dir\"]\nlst = os.path.join(rdir, \"list.txt\")\nwith open(lst, \"w\") as fh:\n    for shot in plan[\"shots\"]:\n        fh.write(\"file '\" + shot[\"id\"] + \".mp4'\\n\")\nreturn [{\"json\": plan}]\n"
+      },
+      "id": "Py_ConcatList",
+      "name": "Build Concat List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst plan = $json;\nfunction srtTime(sec) {\n  const ms = Math.max(0, Math.round(sec * 1000));\n  const h = Math.floor(ms / 3600000);\n  const m = Math.floor((ms % 3600000) / 60000);\n  const s = Math.floor((ms % 60000) / 1000);\n  const milli = ms % 1000;\n  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(milli).padStart(3, '0')}`;\n}\nlet t = 0;\nconst cues = [];\nfor (const shot of plan.shots) {\n  const start = t;\n  const end = t + shot.dur;\n  t = end;\n  const text = (shot.subtext ?? '').toString().trim();\n  if (!text) continue;\n  cues.push(`${cues.length + 1}\\n${srtTime(start)} --> ${srtTime(end)}\\n${text}\\n`);\n}\nreturn [{ json: { slug: plan.slug, plan, srt: cues.join('\\n') } }];\n"
+      },
+      "id": "Code_SRT",
+      "name": "Build SRT",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "python",
+        "pythonCode": "\nimport base64, datetime, json, os, subprocess\n\nitem = _items[0][\"json\"]\nplan = item[\"plan\"]\nslug = item[\"slug\"]\nroot = \"/home/node/files/films/\" + slug\nrdir = plan[\"rendered_dir\"]\n\n# subs.srt is always written; burn_subs decides only whether it is composited in.\nwith open(os.path.join(root, \"subs.srt\"), \"w\", encoding=\"utf-8\") as fh:\n    fh.write(item[\"srt\"])\n\nfilm = os.path.join(root, \"film.mp4\")\nvf = \"[0:v]format=yuv420p[v]\"\nif plan.get(\"burn_subs\"):\n    style = \"FontSize=%d,Outline=1,Shadow=0,MarginV=28\" % int(plan.get(\"font_size\") or 24)\n    vf = \"[0:v]subtitles=\" + os.path.join(root, \"subs.srt\") + \":force_style='\" + style + \"',format=yuv420p[v]\"\n\n# Raw Seedance clips cannot be stream-copied together: they may differ in sample\n# rate, channel layout, frame rate and timebase, and some carry no audio at all.\n# Normalise Clips already forced every segment to 1080p/<fps> yuv420p + 48kHz\n# stereo AAC, so here we decode the list through a filter graph and re-encode\n# once, which keeps A/V sync and timestamps correct across boundaries.\nargs = [\"ffmpeg\", \"-y\", \"-loglevel\", \"error\", \"-f\", \"concat\", \"-safe\", \"0\", \"-i\", \"list.txt\"]\nmusic = (plan.get(\"music_file\") or \"\").strip()\nif music:\n    mp = music if os.path.isabs(music) else os.path.join(root, \"music\", os.path.basename(music))\n    if not os.path.exists(mp):\n        raise RuntimeError(\"music file not found: \" + mp)\n    args += [\"-stream_loop\", \"-1\", \"-i\", mp]\n    vol = plan.get(\"music_volume\", 0.15)\n    fc = vf + \";[1:a]volume=\" + str(vol) + \"[m];[0:a][m]amix=inputs=2:duration=first:dropout_transition=0[a]\"\n    args += [\"-filter_complex\", fc, \"-map\", \"[v]\", \"-map\", \"[a]\"]\nelse:\n    args += [\"-filter_complex\", vf, \"-map\", \"[v]\", \"-map\", \"0:a\"]\nargs += [\"-c:v\", \"libx264\", \"-preset\", \"medium\", \"-crf\", \"18\",\n         \"-c:a\", \"aac\", \"-b:a\", \"192k\", \"-ar\", \"48000\", \"-ac\", \"2\",\n         \"-movflags\", \"+faststart\", film]\npr = subprocess.run(args, capture_output=True, text=True, cwd=rdir)\nif pr.returncode != 0:\n    raise RuntimeError(\"final encode failed: \" + (pr.stderr or \"\")[-300:])\n\npr = subprocess.run([\"ffprobe\", \"-v\", \"error\", \"-show_entries\", \"format=duration,size\", \"-of\", \"json\", film],\n                    capture_output=True, text=True, check=True)\nmeta = json.loads(pr.stdout)\nduration = round(float(meta[\"format\"][\"duration\"]), 2)\nsize_mb = round(int(meta[\"format\"][\"size\"]) / 1048576, 2)\n\nnow = datetime.datetime.utcnow().isoformat() + \"Z\"\npf = os.path.join(root, \"project.json\")\nproj = json.load(open(pf)) if os.path.exists(pf) else {}\nproj.update({\"status\": \"rendered\", \"updated_at\": now})\n# Same key film-05 uses: both assemblies produce film.mp4, only one runs per\n# project. `mode` records which engine ran without breaking load-by-slug.\nproj.setdefault(\"stages\", {})[\"assembly\"] = {\n    \"status\": \"done\",\n    \"done_at\": now,\n    \"mode\": \"seedance\",\n    \"shots\": len(plan[\"shots\"]),\n    \"burn_subs\": bool(plan.get(\"burn_subs\")),\n    \"duration_seconds\": duration,\n    \"size_mb\": size_mb,\n}\nwith open(pf, \"w\") as fh:\n    json.dump(proj, fh, indent=2, ensure_ascii=False)\n\nreturn [{\"json\": {\"ok\": True, \"film\": film, \"duration\": duration, \"size_mb\": size_mb}}]\n"
+      },
+      "id": "Py_Final",
+      "name": "Write Subs & Mix Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "filmPath",
+              "name": "filmPath",
+              "value": "={{ $json.film }}",
+              "type": "string"
+            },
+            {
+              "id": "durationSeconds",
+              "name": "durationSeconds",
+              "value": "={{ $json.duration }}",
+              "type": "number"
+            },
+            {
+              "id": "sizeMb",
+              "name": "sizeMb",
+              "value": "={{ $json.size_mb }}",
+              "type": "number"
+            },
+            {
+              "id": "nextStep",
+              "name": "nextStep",
+              "value": "film.mp4 is ready — Seedance clips assembled with their native audio. Enjoy the screening!",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "Set_Done",
+      "name": "Render Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        420,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Seedance Assemble Hook": {
+      "main": [
+        [
+          {
+            "node": "Build Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Request": {
+      "main": [
+        [
+          {
+            "node": "Plan Seedance Render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan Seedance Render": {
+      "main": [
+        [
+          {
+            "node": "Normalise Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise Clips": {
+      "main": [
+        [
+          {
+            "node": "Build Concat List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Concat List": {
+      "main": [
+        [
+          {
+            "node": "Build SRT",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build SRT": {
+      "main": [
+        [
+          {
+            "node": "Write Subs & Mix Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Subs & Mix Final": {
+      "main": [
+        [
+          {
+            "node": "Render Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "active": false
+}

@@ -83,12 +83,31 @@ Notes:
 
 ### Pipeline buttons
 
-After a project is created, the page shows a **Pipeline** card with the slug filled in automatically:
+After a project is created, the page shows a **Pipeline** card with the slug filled in automatically. A **Pipeline** selector at the top of the card picks between two modes, and the stage list below changes to match:
+
+| Mode | Stages |
+|------|--------|
+| **Seedance** (default) | script → shots → animate → assemble |
+| **No Seedance** | script → shots → voice → assemble (animate optional) |
+
+The selection is remembered in `localStorage`; loading an existing project by slug auto-selects the mode that project has actually run.
+
+**Seedance mode** animates every shot and assembles the resulting clips — there is no voiceover stage, because Seedance 2.0 Fast generates each clip's own audio. Stages:
 
 1. **Generate script** → `POST /webhook/film-run-script` (`{project_slug}`) — shows `shotCount` and script path; also generates per-character anchor portraits
 2. **Generate shot images** → `POST /webhook/film-gen-shots` — appears when the script finishes
-3. **Generate voiceover** → `POST /webhook/film-gen-voice` — appears when shots finish
-4. **Assemble final film** → `POST /webhook/film-assemble` — shows `filmPath`, duration, size, and a **⬇ Download film.mp4** button
+3. **Animate shots (Seedance)** → `POST /webhook/film-gen-seedance` — real video clips with native audio
+4. **Assemble final film** → `POST /webhook/film-assemble-seedance` — shows `filmPath`, duration, size, and a **⬇ Download film.mp4** button
+
+**No Seedance mode** is the classic path — stills rendered with image motion, narrated by the TTS voiceover stage, assembled by `film-05`:
+
+1. **Generate script** → `POST /webhook/film-run-script`
+2. **Generate shot images** → `POST /webhook/film-gen-shots`
+3. **Animate shots (Seedance)** → `POST /webhook/film-gen-seedance` (optional; assembly prefers these clips when present)
+4. **Generate voiceover** → `POST /webhook/film-gen-voice` — appears when shots finish
+5. **Assemble final film** → `POST /webhook/film-assemble`
+
+Both assemble stages accept a **Subtitles** choice: *Burn into video* (default) or *Sidecar .srt only*. `subs.srt` is always written to the project folder either way — the choice only controls whether it is composited into `film.mp4`.
 
 The download button hits `GET /webhook/film-download?slug=<slug>` (`film-download.workflow.json`), which streams the rendered `film.mp4` out of the n8n container as `video/mp4` with `Content-Disposition: attachment; filename="film.mp4"`. Only shown after assembly succeeds; requesting a slug with no rendered film returns an empty response (the UI never links to it in that state).
 
@@ -100,8 +119,9 @@ After each stage completes, its actual output is rendered below the stage row (v
 
 1. **Script** — character cards with their generated anchor portraits (`refs/anchors/char_<id>.jpg`), voice, and visual description, plus a per-scene collapsible screenplay (shot id, image prompt, narration, dialogue with speaker names)
 2. **Shots** — gallery of generated `shots/shot_XXX.png` stills (click for full size); missing images are noted
-3. **Voiceover** — per-shot audio players for `audio/shot_XXX.mp3` with durations; silent shots are labeled instead of given a player
-4. **Assemble** — inline `<video controls>` player of `film.mp4` with size, alongside the download button
+3. **Animate** — per-shot `videos/shot_XXX.mp4` players; failed generations are labeled from the stage's `failed_ids`
+4. **Voiceover** (No Seedance mode only) — per-shot audio players for `audio/shot_XXX.mp3` with durations; silent shots are labeled instead of given a player
+5. **Assemble** — inline `<video controls>` player of `film.mp4` with size, alongside the download button
 
 These are served by `film-review.workflow.json` ("AI Film 07 — Review & Assets", workflow ID `ax3vTv5EOwKlT0Va`):
 
@@ -114,7 +134,8 @@ The Pipeline card has a **Load existing project** input: enter a slug and comple
 
 ## Files
 - `user-intention-fixer.workflow.json`: local source of truth for workflow definition.
-- `film-0*.workflow.json`: AI film pipeline (setup → script + character anchors → shots → voiceover → assemble).
+- `film-0*.workflow.json`: AI film pipeline (setup → script + character anchors → shots → Seedance animation → voiceover → assemble).
+- `film-05b-seedance-assemble.workflow.json`: Seedance-clip assembly (`POST /webhook/film-assemble-seedance`). Normalises each animated clip (keeping its native audio), concatenates in script order, and emits `film.mp4` + `subs.srt`. Distinct from `film-05`, which renders stills and mixes a TTS track.
 - `film-download.workflow.json`: serves the rendered `film.mp4` for download (`GET /webhook/film-download?slug=...`, workflow ID `MewzwAdmqjhPoRAM`).
 - `film-review.workflow.json`: stage-review manifest + asset proxy (`GET /webhook/film-review`, `GET /webhook/film-asset`, workflow ID `ax3vTv5EOwKlT0Va`).
 - `web/index.html`: project setup web form (see "Film Project Setup UI").

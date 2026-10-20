@@ -70,7 +70,7 @@ async function loadPipelineBySlug() {
       return;
     }
     setLoadStatus('Loaded "' + (manifest.title || slug) + '" — completed stages restored below.', false);
-    initPipeline(slug);
+    initPipeline(slug, detectPipelineMode(manifest));
     pipeline = hydrateStagesFromManifest(manifest);
     renderPipeline();
     els.pipelineCard.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -83,6 +83,16 @@ async function loadPipelineBySlug() {
     reviewEls.loadBtn.disabled = false;
     reviewEls.loadBtn.textContent = "Load";
   }
+}
+
+// A project that has run the Seedance stage is a Seedance project. Prefer the
+// explicit provenance the Seedance assembly records, then the videos stage.
+function detectPipelineMode(manifest) {
+  const stages = manifest.stages || {};
+  if (stages.assembly && stages.assembly.mode === "seedance") return "seedance";
+  if (stages.videos) return "seedance";
+  if (stages.voiceover) return "stills";
+  return undefined; // let initPipeline fall back to the stored/default mode
 }
 
 function hydrateStagesFromManifest(manifest) {

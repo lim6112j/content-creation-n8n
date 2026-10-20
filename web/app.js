@@ -19,11 +19,15 @@ const els = {
   pipelineCard: document.getElementById("pipelineCard"),
   pipelineSlug: document.getElementById("pipelineSlug"),
   pipelineSteps: document.getElementById("pipelineSteps"),
+  modeSelect: document.getElementById("modeSelect"),
+  modeHint: document.getElementById("modeHint"),
+  subtitleGroup: document.getElementById("subtitleGroup"),
+  subtitleSelect: document.getElementById("subtitleSelect"),
 };
 
 let images = []; // [{ id, file, url }]
 let nextImageId = 1;
-let pipeline = null; // { slug, manifest, stages: { [id]: { status, result, error } } }
+let pipeline = null; // { slug, manifest, mode, subtitles, stages: { [id]: { status, result, error } } }
 let elapsedTimer = null; // { stageId, interval }
 
 function getExtension(filename) {
@@ -188,7 +192,80 @@ function extractErrorMessage(payload, fallback) {
   return fallback;
 }
 
-// ---------- Pipeline stages (film-02 … film-05) ----------
+// ---------- Pipeline stages ----------
+
+const MODE_STORAGE_KEY = "aiFilmPipelineMode";
+const SUBTITLE_STORAGE_KEY = "aiFilmSubtitles";
+
+function readStoredMode() {
+  try {
+    const stored = localStorage.getItem(MODE_STORAGE_KEY);
+    return PIPELINE_MODES[stored] ? stored : DEFAULT_PIPELINE_MODE;
+  } catch (error) {
+    return DEFAULT_PIPELINE_MODE;
+  }
+}
+
+function readStoredSubtitles() {
+  try {
+    const stored = localStorage.getItem(SUBTITLE_STORAGE_KEY);
+    return SUBTITLE_OPTIONS.some((option) => option.value === stored) ? stored : "burn";
+  } catch (error) {
+    return "burn";
+  }
+}
+
+function storePreference(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (error) {
+    // Storage can be unavailable (private mode); the in-memory state still applies.
+  }
+}
+
+// Reassigns the PIPELINE_STAGES binding the rest of the file iterates over.
+function applyPipelineMode(mode) {
+  PIPELINE_STAGES = (PIPELINE_MODES[mode] ?? PIPELINE_MODES[DEFAULT_PIPELINE_MODE]).stages;
+}
+
+function setPipelineMode(mode, options = {}) {
+  const next = PIPELINE_MODES[mode] ? mode : DEFAULT_PIPELINE_MODE;
+  applyPipelineMode(next);
+  storePreference(MODE_STORAGE_KEY, next);
+  if (!options.silent) els.modeSelect.value = next;
+  els.modeHint.textContent = PIPELINE_MODES[next].hint;
+
+  if (pipeline) {
+    pipeline = { ...pipeline, mode: next, stages: buildInitialStages() };
+    renderPipeline();
+  }
+}
+
+function setSubtitles(value) {
+  const next = SUBTITLE_OPTIONS.some((option) => option.value === value) ? value : "burn";
+  storePreference(SUBTITLE_STORAGE_KEY, next);
+  if (pipeline) pipeline = { ...pipeline, subtitles: next };
+  els.subtitleSelect.value = next;
+}
+
+function populateModeControls() {
+  els.modeSelect.replaceChildren();
+  for (const mode of Object.values(PIPELINE_MODES)) {
+    const option = document.createElement("option");
+    option.value = mode.id;
+    option.textContent = mode.label;
+    els.modeSelect.append(option);
+  }
+  els.subtitleSelect.replaceChildren();
+  for (const choice of SUBTITLE_OPTIONS) {
+    const option = document.createElement("option");
+    option.value = choice.value;
+    option.textContent = choice.label;
+    els.subtitleSelect.append(option);
+  }
+  els.modeSelect.addEventListener("change", () => setPipelineMode(els.modeSelect.value));
+  els.subtitleSelect.addEventListener("change", () => setSubtitles(els.subtitleSelect.value));
+}
 
 function buildInitialStages() {
   return Object.fromEntries(
@@ -196,9 +273,20 @@ function buildInitialStages() {
   );
 }
 
-function initPipeline(slug) {
+function initPipeline(slug, mode) {
   stopElapsedTimer();
-  pipeline = { slug, stages: buildInitialStages(), manifest: null };
+  const selected = PIPELINE_MODES[mode] ? mode : readStoredMode();
+  applyPipelineMode(selected);
+  els.modeSelect.value = selected;
+  els.modeHint.textContent = PIPELINE_MODES[selected].hint;
+  pipeline = {
+    slug,
+    mode: selected,
+    subtitles: readStoredSubtitles(),
+    stages: buildInitialStages(),
+    manifest: null,
+  };
+  els.subtitleSelect.value = pipeline.subtitles;
   els.pipelineCard.classList.remove("hidden");
   renderPipeline();
 }
@@ -230,6 +318,16 @@ function stopElapsedTimer() {
   elapsedTimer = null;
 }
 
+// Only the assemble stage takes extra body fields; everything else sends the
+// slug alone, as before.
+function buildStageBody(stage) {
+  const body = { project_slug: pipeline.slug };
+  if (stage.subtitles) {
+    body.burn_subs = pipeline.subtitles === "burn";
+  }
+  return body;
+}
+
 async function runStage(stageId) {
   if (!pipeline) return;
   const stage = PIPELINE_STAGES.find((s) => s.id === stageId);
@@ -242,7 +340,7 @@ async function runStage(stageId) {
     const response = await fetch(stage.endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ project_slug: pipeline.slug }),
+      body: JSON.stringify(buildStageBody(stage)),
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
@@ -430,4 +528,10 @@ function setupDropzone() {
 setupDropzone();
 els.story.addEventListener("input", updateStoryCounter);
 els.form.addEventListener("submit", submitForm);
+
+// Build the mode/subtitle controls and apply the stored preference before the
+// first pipeline render, so PIPELINE_STAGES matches what the selector shows.
+populateModeControls();
+setPipelineMode(readStoredMode(), { silent: false });
+setSubtitles(readStoredSubtitles());
 updateStoryCounter();
